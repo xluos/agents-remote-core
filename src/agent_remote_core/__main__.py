@@ -26,10 +26,10 @@ from pathlib import Path
 from typing import Optional
 
 from .utils.session import (
-    SOCKET_DIR, USER_DATA_DIR,
-    get_socket_path, get_pid_file, get_env_snapshot_path,
+    USER_DATA_DIR,
+    get_socket_path, get_pid_file, get_env_snapshot_path, get_socket_dir,
     list_active_sessions, cleanup_session,
-    ensure_socket_dir, ensure_user_data_dir,
+    ensure_socket_dir, ensure_user_data_dir, set_data_dir,
     _safe_filename,
 )
 
@@ -199,7 +199,7 @@ def cmd_mirror(args):
     print(f"镜像 tmux session: {args.tmux_target}")
     print(f"  daemon session : {session_name}")
     print(f"  socket         : {get_socket_path(session_name)}")
-    print(f"  mq snapshot    : {SOCKET_DIR / (_safe_filename(session_name) + '.mq')}")
+    print(f"  mq snapshot    : {get_socket_dir() / (_safe_filename(session_name) + '.mq')}")
     print()
 
     _run_server_blocking(
@@ -267,7 +267,7 @@ def cmd_paths(args):
     out = {
         "session_name": args.name,
         "socket": str(get_socket_path(args.name)),
-        "mq":     str(SOCKET_DIR / f"{_safe_filename(args.name)}.mq"),
+        "mq":     str(get_socket_dir() / f"{_safe_filename(args.name)}.mq"),
         "pid_file": str(get_pid_file(args.name)),
         "active": get_socket_path(args.name).exists(),
     }
@@ -279,6 +279,15 @@ def main():
     parser = argparse.ArgumentParser(
         prog="agent-remote-core",
         description="Short-lived PTY-host runtime — start / serve --foreground / mirror / list / kill / paths",
+    )
+    # Namespace 全局参数：所有 socket / mq / pid / FIFO 落在这个目录下
+    # 优先级：flag > AGENT_REMOTE_CORE_DATA_DIR env > 默认 /tmp/remote-claude
+    parser.add_argument(
+        "--data-dir",
+        help="Runtime directory for sockets / mq / pid files. "
+             "Default: $AGENT_REMOTE_CORE_DATA_DIR or /tmp/remote-claude. "
+             "Use this to namespace-isolate sessions from other apps using "
+             "the same core binary (e.g. agentara → /tmp/agentara/).",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -323,6 +332,12 @@ def main():
     p_paths.set_defaults(func=cmd_paths)
 
     args = parser.parse_args()
+
+    # 应用 namespace（必须在调用任何 cmd_* 之前，以便 set_data_dir 改变
+    # utils.session.SOCKET_DIR，让 get_socket_dir() 拿到新值）
+    if args.data_dir:
+        set_data_dir(args.data_dir)
+
     sys.exit(args.func(args))
 
 

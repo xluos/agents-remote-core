@@ -15,10 +15,40 @@ from typing import Optional, List
 import uuid
 
 
-# 常量
-SOCKET_DIR = Path("/tmp/remote-claude")
+# Namespace-aware paths
+#
+# Runtime files (socket / mq / pid / FIFO) live in SOCKET_DIR.
+# Default = /tmp/remote-claude/  (backward compatible).
+# Upper-layer apps that want their sessions isolated from agent-remote's
+# Feishu bridge can call set_data_dir() at startup OR set the
+# AGENT_REMOTE_CORE_DATA_DIR env var OR pass --data-dir on the CLI.
+#
+# This is the *only* knob — change it and every consumer of get_*_path
+# automatically writes to the new directory.
+_DEFAULT_SOCKET_DIR = "/tmp/remote-claude"
+SOCKET_DIR = Path(os.environ.get("AGENT_REMOTE_CORE_DATA_DIR", _DEFAULT_SOCKET_DIR))
 USER_DATA_DIR = Path.home() / ".remote-claude"
 TMUX_SESSION_PREFIX = "rc-"
+
+
+def set_data_dir(path) -> None:
+    """Override the runtime directory at startup.
+
+    Called by the CLI when --data-dir is given, or by SDK consumers that
+    spawn core via Python API. Must be called BEFORE any get_*_path is used.
+    """
+    global SOCKET_DIR
+    SOCKET_DIR = Path(path)
+
+
+def get_socket_dir() -> Path:
+    """Always-fresh accessor for the runtime dir.
+
+    Outside callers should use this instead of importing SOCKET_DIR
+    directly, because Python's `from utils.session import SOCKET_DIR`
+    binds the value at import time and won't see set_data_dir() updates.
+    """
+    return SOCKET_DIR
 
 
 def get_env_file() -> Path:

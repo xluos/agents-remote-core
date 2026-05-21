@@ -33,7 +33,7 @@ from ..utils.protocol import (
 from ..utils.session import (
     get_socket_path, get_pid_file, get_name_file, ensure_socket_dir,
     generate_client_id, cleanup_session, _safe_filename, _log_filename, get_env_file,
-    SOCKET_DIR
+    get_socket_dir,
 )
 
 logger = logging.getLogger('Server')
@@ -178,11 +178,11 @@ class OutputWatcher:
         self._debug_screen = debug_screen  # --debug-screen 开启后才写 _screen.log
         self._debug_verbose = debug_verbose  # --debug-verbose 开启后输出 indicator/repr 等诊断信息
         log_name = _log_filename(session_name)
-        self._debug_file = f"/tmp/remote-claude/{log_name}_messages.log"
+        self._debug_file = str(get_socket_dir() / f"{log_name}_messages.log")
         # PTY 原始字节流日志（仅 --debug-screen 开启时使用）
         self._raw_log_fd = None
         if debug_screen:
-            raw_log_path = f"/tmp/remote-claude/{log_name}_pty_raw.log"
+            raw_log_path = str(get_socket_dir() / f"{log_name}_pty_raw.log")
             try:
                 self._raw_log_fd = open(raw_log_path, "a", encoding="ascii", buffering=1)
             except Exception:
@@ -656,7 +656,7 @@ class OutputWatcher:
         每个字符的 fg/bg 颜色通过 ANSI SGR 序列直接嵌入，
         cat _screen.log 即可在终端看到与 pyte 渲染一致的着色效果。
         """
-        base = f"/tmp/remote-claude/{_log_filename(self._session_name)}"
+        base = str(get_socket_dir() / _log_filename(self._session_name))
         try:
             # pyte 屏幕快照（覆盖写，只保留最新一帧）
             screen_path = base + "_screen.log"
@@ -943,7 +943,7 @@ class ProxyServer:
         # 添加运行阶段日志文件
         log_name = _log_filename(self.session_name)
         runtime_handler = logging.FileHandler(
-            f"{SOCKET_DIR}/{log_name}_server.log",
+            f"{get_socket_dir()}/{log_name}_server.log",
             encoding="utf-8"
         )
         runtime_handler.setFormatter(logging.Formatter(
@@ -956,7 +956,7 @@ class ProxyServer:
         # DEBUG 级别时额外记录调试日志到独立文件
         if SERVER_LOG_LEVEL_MAP == logging.DEBUG:
             debug_handler = logging.FileHandler(
-                f"{SOCKET_DIR}/{log_name}_debug.log",
+                f"{get_socket_dir()}/{log_name}_debug.log",
                 encoding="utf-8"
             )
             debug_handler.setLevel(logging.DEBUG)
@@ -1085,7 +1085,7 @@ class ProxyServer:
         # 准备 FIFO 路径（每个 mirror 一个）
         from ..utils.session import _safe_filename
         safe = _safe_filename(self.session_name)
-        pipe_path = SOCKET_DIR / f"{safe}_mirror.pipe"
+        pipe_path = get_socket_dir() / f"{safe}_mirror.pipe"
         try:
             if pipe_path.exists():
                 pipe_path.unlink()
