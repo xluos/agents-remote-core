@@ -19,14 +19,14 @@ import uuid
 #
 # Runtime files (socket / mq / pid / FIFO) live in SOCKET_DIR.
 # Default = /tmp/remote-claude/  (backward compatible).
-# Upper-layer apps that want their sessions isolated from agent-remote's
+# Upper-layer apps that want their sessions isolated from agents-remote's
 # Feishu bridge can call set_data_dir() at startup OR set the
-# AGENT_REMOTE_CORE_DATA_DIR env var OR pass --data-dir on the CLI.
+# AGENTS_REMOTE_CORE_DATA_DIR env var OR pass --data-dir on the CLI.
 #
 # This is the *only* knob — change it and every consumer of get_*_path
 # automatically writes to the new directory.
 _DEFAULT_SOCKET_DIR = "/tmp/remote-claude"
-SOCKET_DIR = Path(os.environ.get("AGENT_REMOTE_CORE_DATA_DIR", _DEFAULT_SOCKET_DIR))
+SOCKET_DIR = Path(os.environ.get("AGENTS_REMOTE_CORE_DATA_DIR", _DEFAULT_SOCKET_DIR))
 USER_DATA_DIR = Path.home() / ".remote-claude"
 TMUX_SESSION_PREFIX = "rc-"
 

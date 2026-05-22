@@ -1,8 +1,8 @@
-# agent-remote-core
+# agents-remote-core
 
 Short-lived PTY-host runtime that wraps a CLI agent (Claude Code / Codex) and exposes its terminal state as a structured shared-memory snapshot. Multiple consumers (TUIs, chat-bot bridges, web dashboards) can attach simultaneously without each running their own ANSI parser.
 
-Extracted from [remote_claude](https://github.com/xluos/remote_claude); the runtime is reusable on its own through the [`@agent-remote/sdk`](https://www.npmjs.com/package/@agent-remote/sdk) (TypeScript) or by talking directly to the protocol.
+Extracted from [remote_claude](https://github.com/xluos/remote_claude); the runtime is reusable on its own through the [`@agents-remote/sdk`](https://www.npmjs.com/package/@agents-remote/sdk) (TypeScript) or by talking directly to the protocol.
 
 ## What it does
 
@@ -29,9 +29,9 @@ Mirror mode is end-to-end byte-faithful — `\x1b[5m` (blink) survives, so strea
 ## Install
 
 ```bash
-pip install agent-remote-core
+pip install agents-remote-core
 # or
-uv tool install agent-remote-core
+uv tool install agents-remote-core
 ```
 
 Requires Python ≥ 3.9 and (for mirror mode) `tmux`.
@@ -40,16 +40,16 @@ Requires Python ≥ 3.9 and (for mirror mode) `tmux`.
 
 ```bash
 # Mode 1: start a fresh session under the daemon
-agent-remote-core start mywork -- --model claude-opus-4-7
+agents-remote-core start mywork -- --model claude-opus-4-7
 
 # Mode 2: mirror an existing tmux session (e.g. one claude-squad created)
-agent-remote-core mirror claudesquad_a1b2c3
+agents-remote-core mirror claudesquad_a1b2c3
 
 # List active sessions
-agent-remote-core list
+agents-remote-core list
 
 # Stop one
-agent-remote-core kill mywork
+agents-remote-core kill mywork
 ```
 
 Each session exposes:
@@ -58,10 +58,10 @@ Each session exposes:
 
 ## Consuming from your code
 
-The protocol is plain JSON + mmap, so any language can read it. The official client SDK is in TypeScript: [`@agent-remote/sdk`](https://www.npmjs.com/package/@agent-remote/sdk).
+The protocol is plain JSON + mmap, so any language can read it. The official client SDK is in TypeScript: [`@agents-remote/sdk`](https://www.npmjs.com/package/@agents-remote/sdk).
 
 ```ts
-import { SessionReader, SessionWriter } from "@agent-remote/sdk";
+import { SessionReader, SessionWriter } from "@agents-remote/sdk";
 
 const reader = new SessionReader("mywork");
 for await (const snap of reader.subscribe()) {

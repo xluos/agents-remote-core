@@ -1216,7 +1216,7 @@ class ProxyServer:
     async def _read_stdin_to_pty(self):
         """前台模式：从本进程 stdin 读字节写到 PTY master
 
-        tmux pane 里跑 agent-remote-core serve --foreground 时，pane 的输入
+        tmux pane 里跑 agents-remote-core serve --foreground 时，pane 的输入
         （用户敲键、tmux send-keys -t）会变成本进程的 stdin。直接把这些字节
         写到 PTY master，让 claude 看到。
         """

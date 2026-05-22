@@ -2,14 +2,14 @@
 
 - **Status**: Accepted
 - **Date**: 2026-05-21
-- **Affects**: `agent-remote-daemon`, indirectly `@agent-remote/sdk` and `claude-squad-ts-remote`
+- **Affects**: `agents-remote-daemon`, indirectly `@agents-remote/sdk` and `claude-squad-ts-remote`
 
 ## Context
 
 The daemon is currently Python. Its dependencies are tiny (`pyte` only) but it
 still requires the consumer's machine to have Python on PATH, typically
 installed via `uv tool install` or `pip install`. The rest of the stack
-(`@agent-remote/sdk`, `claude-squad-ts-remote`) is TypeScript/Bun.
+(`@agents-remote/sdk`, `claude-squad-ts-remote`) is TypeScript/Bun.
 
 The natural question: should the daemon also be TypeScript so the whole stack
 is one language?
@@ -25,7 +25,7 @@ language wrote it.
 ## Why
 
 1. **The pyte parser is a real asset.** The Claude and Codex parsers in
-   `src/agent_remote_daemon/parsers/` (≈2000 LOC combined) have been
+   `src/agents_remote_daemon/parsers/` (≈2000 LOC combined) have been
    production-hardened for several months:
    - inter-frame `dot_row_cache` persistence (the blinking-dot retry trick),
    - 1-second timing-window smoothing for status lines and streaming flags,
@@ -40,7 +40,7 @@ language wrote it.
    problem. A self-contained binary solves it without touching parser code.
 
 3. **The SDK already hides Python from TS consumers.** From a
-   `@agent-remote/sdk` user's perspective there is no Python anywhere — they
+   `@agents-remote/sdk` user's perspective there is no Python anywhere — they
    call TS APIs, read mmap files, send bytes over a Unix socket. Python only
    lives in the daemon process itself, which is a system component, not a
    library the consumer composes with.
@@ -56,7 +56,7 @@ language wrote it.
 ## Consequences
 
 - The daemon remains Python; releases need a Python build pipeline.
-- Consumers of `@agent-remote/sdk` continue to require the daemon binary on
+- Consumers of `@agents-remote/sdk` continue to require the daemon binary on
   PATH but never write Python themselves.
 - `claude-squad-ts-remote` continues to invoke the daemon by spawning a child
   process (cannot embed it in-process).
@@ -99,11 +99,11 @@ These are scoped for the **packaging** path, not the rewrite path:
 - [ ] Write a `release.spec` for PyInstaller covering `pyte`, `dataclasses`,
       and the `parsers` submodule (it uses `from .. import ...`).
 - [ ] GitHub Actions release workflow producing:
-  - `agent-remote-daemon-{version}-macos-arm64`
-  - `agent-remote-daemon-{version}-macos-x86_64`
-  - `agent-remote-daemon-{version}-linux-x86_64`
+  - `agents-remote-daemon-{version}-macos-arm64`
+  - `agents-remote-daemon-{version}-macos-x86_64`
+  - `agents-remote-daemon-{version}-linux-x86_64`
 - [ ] (Optional) `homebrew-tap` repo with a Formula so `brew install
-      xluos/tap/agent-remote-daemon` works.
+      xluos/tap/agents-remote-daemon` works.
 - [ ] Update SDK README and `claude-squad-ts-remote` README to document the
       binary install path as the recommended option.
 
@@ -112,7 +112,7 @@ Expected effort: a few hours, zero source-code changes.
 ## Notes
 
 - This decision was made in the same session that initially split out
-  `agent-remote-daemon`, `@agent-remote/sdk`, and `claude-squad-ts-remote`
+  `agents-remote-daemon`, `@agents-remote/sdk`, and `claude-squad-ts-remote`
   from the upstream `remote_claude` project, with the end-to-end mirror flow
   verified working (Claude/Codex byte stream → tmux pipe-pane → pyte →
   parser → mmap → SDK reader, with `is_streaming: true` preserved).

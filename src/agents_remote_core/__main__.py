@@ -1,7 +1,7 @@
-"""agent-remote-core CLI
+"""agents-remote-core CLI
 
 A short-lived PTY-host runtime. Spawned per-session by upper-layer apps
-(agent-remote, agentara, third-party TS apps via @agent-remote/sdk).
+(agents-remote, agentara, third-party TS apps via @agents-remote/sdk).
 Each invocation hosts one CLI inside a PTY, parses ANSI into a
 ClaudeWindow snapshot, exposes input over a Unix socket.
 
@@ -277,15 +277,15 @@ def cmd_paths(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="agent-remote-core",
+        prog="agents-remote-core",
         description="Short-lived PTY-host runtime — start / serve --foreground / mirror / list / kill / paths",
     )
     # Namespace 全局参数：所有 socket / mq / pid / FIFO 落在这个目录下
-    # 优先级：flag > AGENT_REMOTE_CORE_DATA_DIR env > 默认 /tmp/remote-claude
+    # 优先级：flag > AGENTS_REMOTE_CORE_DATA_DIR env > 默认 /tmp/remote-claude
     parser.add_argument(
         "--data-dir",
         help="Runtime directory for sockets / mq / pid files. "
-             "Default: $AGENT_REMOTE_CORE_DATA_DIR or /tmp/remote-claude. "
+             "Default: $AGENTS_REMOTE_CORE_DATA_DIR or /tmp/remote-claude. "
              "Use this to namespace-isolate sessions from other apps using "
              "the same core binary (e.g. agentara → /tmp/agentara/).",
     )
