@@ -131,6 +131,11 @@ class SharedStateWriter:
                 option_block_dict = _component_to_dict(window.option_block)
                 option_block_dict['block_id'] = _block_id_from_dict(option_block_dict)
 
+            # hook_state 序列化
+            hook_state_dict = None
+            if getattr(window, 'hook_state', None) is not None:
+                hook_state_dict = asdict(window.hook_state)
+
             snapshot = {
                 "blocks": blocks,
                 "status_line": _component_to_dict(window.status_line) if window.status_line else None,
@@ -141,6 +146,7 @@ class SharedStateWriter:
                 "timestamp": window.timestamp,
                 "layout_mode": window.layout_mode,
                 "cli_type": getattr(window, "cli_type", "unknown"),
+                "hook_state": hook_state_dict,
             }
             data = json.dumps(snapshot, ensure_ascii=False).encode('utf-8')
 

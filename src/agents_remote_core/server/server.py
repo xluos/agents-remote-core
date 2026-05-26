@@ -152,6 +152,7 @@ class ClaudeWindow:
     timestamp: float = 0.0
     layout_mode: str = "normal"  # "normal" | "option" | "detail" | "agent_list" | "agent_detail"
     cli_type: str = "claude"     # "claude" | "codex"（决定 lark 侧的标题文案）
+    hook_state: object = None    # HookState | None（来自 Claude Code hooks 的权威状态）
 
 
 
@@ -168,7 +169,8 @@ class OutputWatcher:
                  parser=None,
                  cli_type: str = "claude",
                  on_snapshot=None, debug_screen: bool = False,
-                 debug_verbose: bool = False):
+                 debug_verbose: bool = False,
+                 hook_state=None):
         self._session_name = session_name
         self._cols = cols
         self._rows = rows
@@ -208,6 +210,8 @@ class OutputWatcher:
         self.last_window: Optional[ClaudeWindow] = None
         # PTY 静止后延迟重刷：消除窗口平滑的延迟效应
         self._reflush_handle: Optional[asyncio.TimerHandle] = None
+        # Hook 状态引用（来自 HookHarness.state，Python 引用语义自动同步）
+        self._hook_state = hook_state
         # 调试日志截断长度（可通过 ~/.remote-claude/.debug_config 配置）
         self._debug_truncate_len = 80
         try:
@@ -227,6 +231,16 @@ class OutputWatcher:
         self._rows = rows
         from .rich_text_renderer import RichTextRenderer
         self._renderer = RichTextRenderer(columns=cols, lines=rows)
+
+    def trigger_flush(self):
+        """强制触发一次 flush（hook 事件到达时调用，让快照立即反映新状态）"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if not self._pending:
+            self._pending = True
+            loop.call_soon(lambda: asyncio.create_task(self._flush()))
 
     def feed(self, data: bytes):
         self._renderer.feed(data)  # 直接喂持久化 screen，不再缓存原始字节
@@ -422,6 +436,7 @@ class OutputWatcher:
                 timestamp=now,
                 layout_mode=self._parser.last_layout_mode,
                 cli_type=self._cli_type,
+                hook_state=self._hook_state,
             )
             # 诊断日志：检测最终输出中是否有同时存在 status_line 和 SystemBlock 的情况
             if display_status:
@@ -833,6 +848,17 @@ class ProxyServer:
         from .shared_state import SharedStateWriter
         self.shared_state = SharedStateWriter(session_name)
 
+        # Hook 注入（仅 claude cli_type 的 start/serve 模式）
+        self._hook_harness = None
+        hook_state_ref = None
+        if self.cli_type == "claude" and not self.tmux_mirror_target:
+            try:
+                from .hooks import HookHarness
+                self._hook_harness = HookHarness(session_name)
+                hook_state_ref = self._hook_harness.state
+            except Exception as e:
+                logger.warning(f"Hook harness 创建失败，继续无 hook 模式: {e}")
+
         # 输出监视器（全量快照架构：PTY → pyte → 解析 → 平滑 → 合并 → 快照 → 共享内存）
         self.output_watcher = OutputWatcher(
             session_name=session_name,
@@ -842,6 +868,7 @@ class ProxyServer:
             on_snapshot=lambda w: self.shared_state.write_snapshot(w),
             debug_screen=self.debug_screen,
             debug_verbose=self.debug_verbose,
+            hook_state=hook_state_ref,
         )
 
         # 运行状态
@@ -897,6 +924,12 @@ class ProxyServer:
             asyncio.create_task(self._read_tmux_pipe())
         else:
             asyncio.create_task(self._read_pty())
+
+        # 启动 hook FIFO reader（hook 事件到达后触发快照刷新）
+        if self._hook_harness:
+            def _on_hook_event(event_name, payload, state):
+                self.output_watcher.trigger_flush()
+            asyncio.create_task(self._hook_harness.start_reader(on_event=_on_hook_event))
 
         # 前台模式：额外起一个任务把自己 stdin 的字节写到 PTY master
         # 这样 tmux pane 的输入（用户敲键、tmux send-keys）会进到 PTY 里
@@ -1004,7 +1037,10 @@ class ProxyServer:
         # 提前计算命令（fork 后父子进程共享，方便父进程打印和子进程执行）
         import shlex as _shlex
         _cmd_parts = _shlex.split(self._get_effective_cmd())
-        _full_cmd = ' '.join(_cmd_parts + self.claude_args)
+        # Hook 注入：在 CLI 参数最前面插入 --settings
+        _hook_args = self._hook_harness.get_cli_args() if self._hook_harness else []
+        _all_args = _hook_args + self.claude_args
+        _full_cmd = ' '.join(_cmd_parts + _all_args)
 
         try:
             pid, fd = pty.fork()
@@ -1028,7 +1064,7 @@ class ProxyServer:
             child_env.pop('TMUX', None)
             child_env.pop('TMUX_PANE', None)
             try:
-                os.execvpe(_cmd_parts[0], _cmd_parts + self.claude_args, child_env)
+                os.execvpe(_cmd_parts[0], _cmd_parts + _all_args, child_env)
             except Exception as _e:
                 msg = f"启动失败: 命令 '{_cmd_parts[0]}' 无法执行: {_e}"
                 os.write(1, (msg + "\n").encode())  # 写到 PTY
@@ -1280,6 +1316,10 @@ class ProxyServer:
             await self._handle_input(client_id, msg)
         elif msg.type == MessageType.RESIZE:
             await self._handle_resize(client_id, msg)
+        elif msg.type == MessageType.PERMISSION_RESPONSE:
+            await self._handle_permission_response(client_id, msg)
+        elif msg.type == MessageType.QUESTION_RESPONSE:
+            await self._handle_question_response(client_id, msg)
 
     async def _handle_input(self, client_id: str, msg: InputMessage):
         """处理输入消息"""
@@ -1319,6 +1359,26 @@ class ProxyServer:
         except Exception as e:
             logger.error(f"调整终端大小错误: {e}")
 
+    async def _handle_permission_response(self, client_id: str, msg):
+        """处理权限决策：写响应文件解除 permission.sh 等待"""
+        if not self._hook_harness:
+            logger.warning("收到 permission_response 但 hook harness 未启用")
+            return
+        ok = self._hook_harness.respond_permission(msg.request_id, msg.decision)
+        if ok:
+            self.output_watcher.trigger_flush()
+            logger.info(f"Permission {msg.decision} by {client_id} (req={msg.request_id})")
+
+    async def _handle_question_response(self, client_id: str, msg):
+        """处理 AskUserQuestion 答案：通过 updatedInput.answers 跳过交互 UI"""
+        if not self._hook_harness:
+            logger.warning("收到 question_response 但 hook harness 未启用")
+            return
+        ok = self._hook_harness.respond_question(msg.request_id, msg.answers)
+        if ok:
+            self.output_watcher.trigger_flush()
+            logger.info(f"Question answered by {client_id} (req={msg.request_id})")
+
     async def _broadcast_output(self, data: bytes):
         """广播输出给所有客户端，同时喂给 OutputWatcher 生成快照"""
         self.output_watcher.feed(data)
@@ -1347,6 +1407,10 @@ class ProxyServer:
                 os.close(self.master_fd)
             except Exception:
                 pass
+
+        # 清理 hook harness
+        if self._hook_harness:
+            self._hook_harness.cleanup()
 
         # 关闭共享状态（会删除 .mq 文件）
         elapsed = int(time.time() - self._start_time)

@@ -355,6 +355,11 @@ def _cleanup_by_safe_name(safe_name: str, session_name: Optional[str] = None):
                 pass
     for suffix in [".sock", ".pid", ".mq", ".name", "_env.json"]:
         (SOCKET_DIR / f"{safe_name}{suffix}").unlink(missing_ok=True)
+    # 清理 hook 临时目录
+    hooks_dir = SOCKET_DIR / f"{safe_name}_hooks"
+    if hooks_dir.exists():
+        import shutil
+        shutil.rmtree(hooks_dir, ignore_errors=True)
     # 清理带后缀的日志文件（使用可读文件名）
     log_suffixes = ["_messages.log", "_screen.log", "_server.log", "_debug.log", "_pty_raw.log"]
     if session_name:
