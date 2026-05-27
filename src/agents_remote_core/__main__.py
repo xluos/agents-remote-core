@@ -115,10 +115,11 @@ def cmd_serve(args):
                   file=sys.stderr)
             return 1
 
-    # 保存环境快照
+    # 保存环境快照（已有时不覆盖，上层可能已写入正确的用户环境）
     env_path = get_env_snapshot_path(name)
-    env_path.write_text(json.dumps(dict(os.environ)), encoding="utf-8")
-    os.chmod(env_path, 0o600)
+    if not env_path.exists():
+        env_path.write_text(json.dumps(dict(os.environ)), encoding="utf-8")
+        os.chmod(env_path, 0o600)
 
     _run_server_blocking(
         session_name=name,
@@ -156,10 +157,11 @@ def cmd_start(args):
         print(f"错误: 会话 '{args.name}' 已存在")
         return 1
 
-    # 保存环境快照
+    # 保存环境快照（已有时不覆盖，上层 agents-remote 可能已写入正确的用户环境）
     env_path = get_env_snapshot_path(args.name)
-    env_path.write_text(json.dumps(dict(os.environ)), encoding="utf-8")
-    os.chmod(env_path, 0o600)
+    if not env_path.exists():
+        env_path.write_text(json.dumps(dict(os.environ)), encoding="utf-8")
+        os.chmod(env_path, 0o600)
 
     _run_server_blocking(
         session_name=args.name,
