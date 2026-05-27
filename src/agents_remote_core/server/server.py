@@ -848,13 +848,13 @@ class ProxyServer:
         from .shared_state import SharedStateWriter
         self.shared_state = SharedStateWriter(session_name)
 
-        # Hook 注入（仅 claude cli_type 的 start/serve 模式）
+        # Hook 注入（start/serve 模式，Claude 和 Codex 均支持）
         self._hook_harness = None
         hook_state_ref = None
-        if self.cli_type == "claude" and not self.tmux_mirror_target:
+        if not self.tmux_mirror_target:
             try:
                 from .hooks import HookHarness
-                self._hook_harness = HookHarness(session_name)
+                self._hook_harness = HookHarness(session_name, cli_type=self.cli_type)
                 hook_state_ref = self._hook_harness.state
             except Exception as e:
                 logger.warning(f"Hook harness 创建失败，继续无 hook 模式: {e}")

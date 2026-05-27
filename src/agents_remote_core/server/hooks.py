@@ -1,23 +1,16 @@
 """
-Claude Code Hook 注入系统
+Claude Code / Codex CLI Hook 注入系统
 
-在 start/serve 模式下注入 Claude Code hooks，通过 FIFO 获取权威状态事件。
-Mirror 模式和 codex cli_type 不支持（无法注入 --settings）。
+在 start/serve 模式下注入 hooks，通过 FIFO 获取权威状态事件。
+Mirror 模式不支持。
+
+两种 CLI 的差异：
+  Claude Code：通过 --settings JSON 注入 hooks，AskUserQuestion 通过 PreToolUse 双向拦截
+  Codex CLI：通过临时 hooks.json 文件注入，PermissionRequest 是独立事件，无 AskUserQuestion
 
 两类 hook 脚本：
   relay（单向）：写 FIFO 后立即 exit 0，用于 SessionStart/Stop 等
   permission（双向）：写 FIFO 后等待响应文件，用于 PermissionRequest 和 AskUserQuestion
-
-事件流：
-  SessionStart → session_id, transcript_path
-  PreToolUse(普通工具) → active_tool, tool_input, tool_status="executing"
-  PreToolUse(AskUserQuestion) → pending_question（等待消费端 respond_question）
-  PostToolUse → 清除 active_tool
-  PostToolUseFailure → tool_status="failed"
-  Stop → turn_complete=True
-  StopFailure → turn_error=True, turn_error_type
-  Notification(permission_prompt) → waiting_permission=True
-  PermissionRequest → pending_permission（等待消费端 respond_permission）
 """
 
 import asyncio
@@ -59,8 +52,8 @@ class HookState:
     event_count: int = 0
 
 
-# 单向 relay 事件（写 FIFO 后立即退出）
-RELAY_EVENTS = {
+# ── Claude Code 事件映射 ──────────────────────────────────────────────────────
+CLAUDE_RELAY_EVENTS = {
     "SessionStart":       "*",
     "Stop":               "*",
     "StopFailure":        "*",
@@ -68,23 +61,34 @@ RELAY_EVENTS = {
     "PostToolUseFailure": "*",
     "Notification":       "permission_prompt",
 }
-
-# 双向事件（写 FIFO 后等待响应文件）
-BIDIRECTIONAL_EVENTS = {
+CLAUDE_BIDIR_EVENTS = {
     "PermissionRequest":  "*",
 }
-
-# AskUserQuestion 需要双向等待用户选择答案
 ASKUSER_TOOL = "AskUserQuestion"
+
+# ── Codex CLI 事件映射 ────────────────────────────────────────────────────────
+# Codex 没有 Notification(permission_prompt)、没有 AskUserQuestion、没有 StopFailure
+# PermissionRequest 是独立事件（和 Claude 相同处理）
+CODEX_RELAY_EVENTS = {
+    "SessionStart":       "*",
+    "Stop":               "*",
+    "PreToolUse":         "*",
+    "PostToolUse":        "*",
+    "PostToolUseFailure": "*",
+}
+CODEX_BIDIR_EVENTS = {
+    "PermissionRequest":  "*",
+}
 
 PERMISSION_WAIT_SECONDS = 300
 
 
 class HookHarness:
-    """管理 hook 临时文件、FIFO 和 --settings 注入"""
+    """管理 hook 临时文件、FIFO 和配置注入（同时支持 Claude Code 和 Codex CLI）"""
 
-    def __init__(self, session_name: str):
+    def __init__(self, session_name: str, cli_type: str = "claude"):
         self._session_name = session_name
+        self._cli_type = cli_type
         safe = _safe_filename(session_name)
         self._hook_dir = get_socket_dir() / f"{safe}_hooks"
         self._hook_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +96,7 @@ class HookHarness:
         self._fifo_path = self._hook_dir / "events.fifo"
         self._relay_script = self._hook_dir / "relay.sh"
         self._permission_script = self._hook_dir / "permission.sh"
+        self._hooks_json_path = self._hook_dir / "hooks.json"  # Codex 用
 
         self.state = HookState()
         self._on_event: Optional[Callable] = None
@@ -160,41 +165,124 @@ exit 0
         self._permission_script.chmod(self._permission_script.stat().st_mode | stat.S_IEXEC)
         logger.info(f"Hook harness 已创建: {self._hook_dir}")
 
-    def get_settings_json(self) -> str:
+    def _build_hooks_dict(self) -> dict:
+        """根据 cli_type 构建 hooks 配置字典"""
         hooks = {}
         relay = str(self._relay_script)
         perm = str(self._permission_script)
 
-        for event, matcher in RELAY_EVENTS.items():
-            hooks[event] = [{
-                "matcher": matcher,
-                "hooks": [{"type": "command", "command": f"{relay} {event}"}],
-            }]
+        if self._cli_type == "codex":
+            for event, matcher in CODEX_RELAY_EVENTS.items():
+                hooks[event] = [{
+                    "matcher": matcher,
+                    "hooks": [{"type": "command", "command": f"{relay} {event}"}],
+                }]
+            for event, matcher in CODEX_BIDIR_EVENTS.items():
+                hooks[event] = [{
+                    "matcher": matcher,
+                    "hooks": [{"type": "command", "command": f"{perm} {event}"}],
+                }]
+        else:
+            # Claude Code
+            for event, matcher in CLAUDE_RELAY_EVENTS.items():
+                hooks[event] = [{
+                    "matcher": matcher,
+                    "hooks": [{"type": "command", "command": f"{relay} {event}"}],
+                }]
+            for event, matcher in CLAUDE_BIDIR_EVENTS.items():
+                hooks[event] = [{
+                    "matcher": matcher,
+                    "hooks": [{"type": "command", "command": f"{perm} {event}"}],
+                }]
+            # Claude PreToolUse 拆成两条 matcher：
+            #   AskUserQuestion → 双向（等待消费端选择答案）
+            #   其他工具       → 单向（纯追踪）
+            hooks["PreToolUse"] = [
+                {
+                    "matcher": f"^{ASKUSER_TOOL}$",
+                    "hooks": [{"type": "command", "command": f"{perm} PreToolUse"}],
+                },
+                {
+                    "matcher": f"^(?!{ASKUSER_TOOL}$)",
+                    "hooks": [{"type": "command", "command": f"{relay} PreToolUse"}],
+                },
+            ]
 
-        for event, matcher in BIDIRECTIONAL_EVENTS.items():
-            hooks[event] = [{
-                "matcher": matcher,
-                "hooks": [{"type": "command", "command": f"{perm} {event}"}],
-            }]
+        return hooks
 
-        # PreToolUse 拆成两条 matcher：
-        #   AskUserQuestion → 双向（等待消费端选择答案）
-        #   其他工具       → 单向（纯追踪）
-        hooks["PreToolUse"] = [
-            {
-                "matcher": f"^{ASKUSER_TOOL}$",
-                "hooks": [{"type": "command", "command": f"{perm} PreToolUse"}],
-            },
-            {
-                "matcher": f"^(?!{ASKUSER_TOOL}$)",
-                "hooks": [{"type": "command", "command": f"{relay} PreToolUse"}],
-            },
-        ]
-
-        return json.dumps({"hooks": hooks})
+    # Codex hooks.json 合并标记（用于清理时识别我们注入的 entries）
+    _CODEX_INJECT_TAG = "__agents_remote_core__"
 
     def get_cli_args(self) -> list:
-        return ["--settings", self.get_settings_json()]
+        """返回注入到 CLI 命令行的参数
+
+        Claude Code: --settings '{"hooks": {...}}'
+        Codex CLI:   合并到 ~/.codex/hooks.json（无 CLI 参数可用）
+        """
+        hooks = self._build_hooks_dict()
+
+        if self._cli_type == "codex":
+            self._inject_codex_hooks(hooks)
+            return []  # Codex 通过文件发现 hooks，无需 CLI 参数
+        else:
+            return ["--settings", json.dumps({"hooks": hooks})]
+
+    def _inject_codex_hooks(self, hooks: dict) -> None:
+        """将 hooks 合并到 ~/.codex/hooks.json（启动前注入，cleanup 时清理）"""
+        codex_hooks_path = Path.home() / ".codex" / "hooks.json"
+
+        # 读取现有配置
+        existing = {}
+        if codex_hooks_path.exists():
+            try:
+                existing = json.loads(codex_hooks_path.read_text())
+            except Exception as e:
+                logger.warning(f"读取 {codex_hooks_path} 失败: {e}")
+        existing_hooks = existing.setdefault("hooks", {})
+
+        # 先清理旧的注入项（上次 crash 未清理的残留）
+        self._remove_tagged_entries(existing_hooks)
+
+        # 合并我们的 hooks（每个 entry 打标记）
+        for event, entries in hooks.items():
+            event_list = existing_hooks.setdefault(event, [])
+            for entry in entries:
+                tagged = dict(entry)
+                tagged["id"] = self._CODEX_INJECT_TAG
+                event_list.append(tagged)
+
+        # 写回
+        codex_hooks_path.parent.mkdir(parents=True, exist_ok=True)
+        codex_hooks_path.write_text(json.dumps(existing, indent=2))
+        self._codex_hooks_injected = True
+        logger.info(f"Codex hooks 已注入: {codex_hooks_path} ({len(hooks)} events)")
+
+    def _remove_tagged_entries(self, hooks_dict: dict) -> None:
+        """从 hooks 字典中移除带 _CODEX_INJECT_TAG 标记的 entries"""
+        for event in list(hooks_dict.keys()):
+            entries = hooks_dict[event]
+            hooks_dict[event] = [
+                e for e in entries
+                if e.get("id") != self._CODEX_INJECT_TAG
+            ]
+            if not hooks_dict[event]:
+                del hooks_dict[event]
+
+    def _cleanup_codex_hooks(self) -> None:
+        """从 ~/.codex/hooks.json 中移除我们注入的 entries"""
+        if not getattr(self, '_codex_hooks_injected', False):
+            return
+        codex_hooks_path = Path.home() / ".codex" / "hooks.json"
+        if not codex_hooks_path.exists():
+            return
+        try:
+            data = json.loads(codex_hooks_path.read_text())
+            hooks_dict = data.get("hooks", {})
+            self._remove_tagged_entries(hooks_dict)
+            codex_hooks_path.write_text(json.dumps(data, indent=2))
+            logger.info(f"Codex hooks 已清理: {codex_hooks_path}")
+        except Exception as e:
+            logger.warning(f"清理 Codex hooks 失败: {e}")
 
     # ── 响应方法 ─────────────────────────────────────────────────
 
@@ -420,6 +508,9 @@ exit 0
 
     def cleanup(self):
         self.stop()
+        # Codex：从 ~/.codex/hooks.json 移除注入的 entries
+        if self._cli_type == "codex":
+            self._cleanup_codex_hooks()
         if self._fifo_fd is not None:
             try:
                 os.close(self._fifo_fd)
